@@ -176,3 +176,56 @@ def test_apply_aborts_on_conflict(tmp_path):
     [(status, log)] = _approve_all(con, crm)
     assert status == "failed" and "conflict" in log[-1]
     assert crm.db["1"]["parent_id"] == OTHER
+
+
+def test_one_account_never_claimed_by_two_locations():
+    # Two website listings at one address, one CRM account: the better match keeps it.
+    locs = [loc("a", "Bellhaven A Memory Care", "1 Main St", phone="(555) 999-0000"),
+            loc("b", "Bellhaven A", "1 Main St", phone="(555) 123-4567")]
+    accs = PARENTS + [acc("1", "Bellhaven A", "1 Main St", phone="(555) 123-4567")]
+    props, rep = build(locs, accs)
+    assert [m["slug"] for m in rep["matched"]] == ["b"]
+    touching_1 = [p for p in props if p["account_id"] == "1"]
+    assert touching_1 == []  # no conflicting rename / duplicate on the shared account
+    (p,) = props
+    assert p["kind"] == "new_account" and p["location_slug"] == "a"
+    assert p["summary"].startswith("WARNING")
+    assert p["evidence"]["shared_with_other_location"][0]["assigned_to"] == "b"
+
+
+def test_decisions_survive_a_fresh_cache(tmp_path):
+    """Decisions live in decisions.jsonl (git); the SQLite cache can be thrown away."""
+    from bellhaven.store import log_decision, read_decisions
+    dec = str(tmp_path / "decisions.jsonl")
+    locs = [loc("a", "Bellhaven A", "1 Main St")]
+    accs = PARENTS + [acc("1", "Old A", "1 Main St", parent=OLD), acc("2", "Bellhaven Gone", "9 Gone Rd")]
+
+    a = connect(str(tmp_path / "machine_a.db"), dec)
+    record_run(a, locs, accs, *build(locs, accs), "t0")
+    reparent, gone = sorted(r[0] for r in a.execute("SELECT id FROM proposals"))
+    a.execute("UPDATE proposals SET status='rejected' WHERE id=?", (reparent,))
+    a.commit()
+    log_decision(a, reparent)
+
+    # Machine B (or CI) starts from an empty cache but the same decisions file.
+    b = connect(str(tmp_path / "machine_b.db"), dec)
+    _, new, _ = record_run(b, locs, accs, *build(locs, accs), "t1")
+    rows = dict(b.execute("SELECT id, status FROM proposals").fetchall())
+    assert rows[reparent] == "rejected"          # not re-proposed
+    assert rows[gone] == "pending" and new == 1  # undecided work still shows up
+
+    # A later decision on B flows back to A's existing cache on next connect.
+    b.execute("UPDATE proposals SET status='rejected' WHERE id=?", (gone,))
+    b.commit()
+    log_decision(b, gone)
+    a2 = connect(str(tmp_path / "machine_a.db"), dec)
+    assert a2.execute("SELECT status FROM proposals WHERE id=?", (gone,)).fetchone()[0] == "rejected"
+    assert len(read_decisions(dec)) == 2
+
+
+def test_decision_log_last_line_wins_after_union_merge(tmp_path):
+    from bellhaven.store import read_decisions
+    p = tmp_path / "decisions.jsonl"
+    p.write_text("\n".join(json.dumps(d) for d in [
+        {"id": "x", "status": "approved"}, {"id": "y", "status": "rejected"}, {"id": "x", "status": "applied"}]) + "\n")
+    assert {k: v["status"] for k, v in read_decisions(str(p)).items()} == {"x": "applied", "y": "rejected"}

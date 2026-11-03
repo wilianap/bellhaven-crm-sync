@@ -1,8 +1,16 @@
-"""SQLite state: proposals + their decisions, and a log of runs.
+"""State: what has been decided (durable, in git) + the working queue (local cache).
+
+* state/decisions.jsonl  - SOURCE OF TRUTH for decisions. Append-only, one JSON
+  line per status change (approved / rejected / applied / failed). It is text,
+  committed to git, and marked `merge=union` in .gitattributes, so decisions made
+  on different machines merge without conflicts. Last line per proposal id wins.
+* state/sync.db          - local SQLite cache of proposals, evidence and runs.
+  Not committed; it can be deleted at any time and rebuilt by a run, which
+  re-applies decisions.jsonl.
 
 Re-run safety: a proposal's id is a fingerprint of what it would change.
-If a run regenerates a fingerprint that already exists (pending, approved,
-rejected, applied...) it is NOT re-inserted, so decided items never come back.
+If a run regenerates a fingerprint that is already in the queue or in
+decisions.jsonl, it is NOT re-proposed, so decided items never come back.
 Pending proposals that a later run no longer generates are marked 'stale'
 (the CRM or website changed underneath them) so nobody approves outdated data.
 """
@@ -11,7 +19,9 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-DB_PATH = os.environ.get("SYNC_DB", os.path.join(os.path.dirname(__file__), "..", "state", "sync.db"))
+STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "state")
+DB_PATH = os.environ.get("SYNC_DB", os.path.join(STATE_DIR, "sync.db"))
+DECIDED = ("approved", "rejected", "applied", "failed")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -37,13 +47,58 @@ def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
-def connect(path=None):
-    path = path or DB_PATH
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    con = sqlite3.connect(path)
+class _Con(sqlite3.Connection):
+    decisions_path = None
+
+
+def connect(path=None, decisions_path=None):
+    """Open the local cache. decisions.jsonl defaults to $SYNC_DECISIONS, else sits next to the db."""
+    path = os.path.abspath(path or DB_PATH)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    con = sqlite3.connect(path, factory=_Con)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    con.decisions_path = (decisions_path or os.environ.get("SYNC_DECISIONS")
+                          or os.path.join(os.path.dirname(path), "decisions.jsonl"))
+    sync_decisions(con)
     return con
+
+
+def read_decisions(path):
+    """Latest decision per proposal id from the append-only log."""
+    latest = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    d = json.loads(line)
+                    latest[d["id"]] = d
+    return latest
+
+
+def log_decision(con, proposal_id):
+    """Append the proposal's current decision state to decisions.jsonl."""
+    r = con.execute("SELECT id, kind, title, account_id, location_slug, status, decided_at, reviewer_comment,"
+                    " result, created_ids FROM proposals WHERE id=?", (proposal_id,)).fetchone()
+    d = dict(r)
+    for k in ("result", "created_ids"):
+        d[k] = json.loads(d[k]) if d[k] else None
+    d["logged_at"] = now()
+    with open(con.decisions_path, "a") as f:
+        f.write(json.dumps(d, sort_keys=True) + "\n")
+
+
+def sync_decisions(con):
+    """Bring the local cache in line with decisions.jsonl (e.g. after a git pull)."""
+    for pid, d in read_decisions(con.decisions_path).items():
+        con.execute(
+            "UPDATE proposals SET status=?, decided_at=?, reviewer_comment=?, result=?, created_ids=? "
+            "WHERE id=? AND status != ?",
+            (d["status"], d.get("decided_at"), d.get("reviewer_comment"),
+             json.dumps(d["result"]) if d.get("result") else None,
+             json.dumps(d.get("created_ids") or {}), pid, d["status"]))
+    con.commit()
 
 
 def record_run(con, locations, accounts, proposals, report, started_at):
@@ -51,10 +106,21 @@ def record_run(con, locations, accounts, proposals, report, started_at):
                       (started_at, len(locations), len(accounts)))
     run_id = cur.lastrowid
     new = 0
-    ids = set()
+    decided = read_decisions(con.decisions_path)
     for p in proposals:
-        ids.add(p["id"])
         row = con.execute("SELECT status FROM proposals WHERE id=?", (p["id"],)).fetchone()
+        if not row and p["id"] in decided:
+            # Decided on another machine / before this cache existed: keep it as history, not as new work.
+            d = decided[p["id"]]
+            con.execute(
+                "INSERT INTO proposals (id, kind, title, summary, location_slug, account_id, ops, evidence,"
+                " status, first_run, last_seen_run, decided_at, reviewer_comment, result, created_ids)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (p["id"], p["kind"], p["title"], p["summary"], p["location_slug"], p["account_id"],
+                 json.dumps(p["ops"]), json.dumps(p["evidence"]), d["status"], run_id, run_id,
+                 d.get("decided_at"), d.get("reviewer_comment"),
+                 json.dumps(d["result"]) if d.get("result") else None, json.dumps(d.get("created_ids") or {})))
+            continue
         if row:
             con.execute("UPDATE proposals SET last_seen_run=? WHERE id=?", (run_id, p["id"]))
             if row["status"] == "stale":  # came back unchanged -> reopen

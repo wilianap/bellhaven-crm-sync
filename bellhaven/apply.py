@@ -9,7 +9,7 @@ Safety:
 """
 import json
 
-from .store import load, now
+from .store import load, log_decision, now
 
 
 def resolve(value, created):
@@ -34,6 +34,7 @@ def apply_proposal(con, crm, proposal_id):
                 created[op["ref"]] = res["account_id"]
                 con.execute("UPDATE proposals SET created_ids=? WHERE id=?", (json.dumps(created), proposal_id))
                 con.commit()
+                log_decision(con, proposal_id)  # created id survives even if the next step fails
                 log.append(f"POST created {res['account_id']}")
             elif op["op"] == "PATCH":
                 changes = {k: resolve(v, created) for k, v in op["changes"].items()}
@@ -53,4 +54,5 @@ def apply_proposal(con, crm, proposal_id):
     con.execute("UPDATE proposals SET status=?, result=? WHERE id=?",
                 (status, json.dumps({"at": now(), "log": log}), proposal_id))
     con.commit()
+    log_decision(con, proposal_id)
     return status, log

@@ -59,6 +59,9 @@ a{color:var(--acc)} .muted{color:var(--mut);font-size:12px}
   {% if ev.rejected_lookalikes %}<details><summary>{{ev.rejected_lookalikes|length}} similar-name CRM account(s) considered and rejected</summary>
   <table><tr><th>Account</th><th>Address</th><th>Parent</th><th>Name sim.</th><th>Why not a match</th></tr>
   {% for l in ev.rejected_lookalikes %}<tr><td><a href="{{crm_url(l.account.account_id)}}" target="_blank">{{l.account.name}}</a></td><td>{{l.account.billing_street}}, {{l.account.billing_city}} {{l.account.billing_state}}</td><td>{{l.account.parent_name}}</td><td>{{l.signals.name_similarity}}</td><td>{{l.why_not}}</td></tr>{% endfor %}</table></details>{% endif %}
+  {% if ev.shared_with_other_location %}<details open><summary>⚠ Account(s) at this address were assigned to another website location</summary>
+  <table><tr><th>Account</th><th>Address</th><th>Parent</th><th>Assigned to</th></tr>
+  {% for x in ev.shared_with_other_location %}<tr><td><a href="{{crm_url(x.account.account_id)}}" target="_blank">{{x.account.name}}</a></td><td>{{x.account.billing_street}}, {{x.account.billing_city}} {{x.account.billing_state}}</td><td>{{x.account.parent_name}}</td><td>{{x.assigned_to}}</td></tr>{% endfor %}</table></details>{% endif %}
   {% elif ev.crm_account %}{% set a = ev.crm_account %}
   <table><tr><th></th><th>CRM <a href="{{crm_url(a.account_id)}}" target="_blank">{{a.account_id}}</a></th>{% for o in ev.same_address_other_operator %}<th>Same address, other operator<br><a href="{{crm_url(o.account_id)}}" target="_blank">{{o.account_id}}</a></th>{% endfor %}</tr>
   {% for label,k in [("Name","name"),("Street","billing_street"),("City","billing_city"),("State","billing_state"),("Zip","billing_zip"),("Parent","parent_name"),("Status","status"),("Lifetime revenue","lifetime_revenue"),("Outstanding AR","outstanding_ar")] %}
@@ -70,10 +73,10 @@ a{color:var(--acc)} .muted{color:var(--mut);font-size:12px}
   {% if p.result %}<details open><summary>Result ({{p.result.at}})</summary><pre>{{p.result.log|join('\n')}}</pre></details>{% endif %}
   {% if p.reviewer_comment %}<p class="muted">Reviewer comment: {{p.reviewer_comment}}</p>{% endif %}
 
-  {% if p.status in ('pending','failed') %}
+  {% if p.status in ('pending','failed','approved') %}
   <form class="actions" method="post">
     <input type="text" name="comment" placeholder="Optional comment">
-    <button class="ap" formaction="/proposals/{{p.id}}/approve">{{'Retry' if p.status=='failed' else 'Approve & write to CRM'}}</button>
+    <button class="ap" formaction="/proposals/{{p.id}}/approve">{{'Retry' if p.status in ('failed','approved') else 'Approve & write to CRM'}}</button>
     {% if p.status=='pending' %}<button class="rj" formaction="/proposals/{{p.id}}/reject">Reject</button>{% endif %}
   </form>{% endif %}
   <div class="muted">id {{p.id}} · first seen run #{{p.first_run}} · last seen run #{{p.last_seen_run}}{% if p.decided_at %} · decided {{p.decided_at}}{% endif %}</div>

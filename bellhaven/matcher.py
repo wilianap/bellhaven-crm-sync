@@ -124,6 +124,11 @@ def patch(acc, changes):
             "expect": {k: acc.get(k) for k in changes if k != "note"}}
 
 
+def claim_score(sig):
+    """How strongly a location claims an account (used when two locations want the same one)."""
+    return (sig["street_match"], sig["zip_match"], sig["phone_match"], sig["name_similarity"])
+
+
 def survivor_rank(bh_id, loc):
     def key(c):
         acc, sig = c
@@ -154,9 +159,29 @@ def build(locations, accounts):
             "ops": ops, "evidence": evidence,
         })
 
+    # Pass 1: candidates per location.
+    per_loc = []
     for loc in locations:
         sigs = [(a, signals(loc, a)) for a in live]
-        cands = sorted([c for c in sigs if is_candidate(c[1])], key=survivor_rank(bh_id, loc), reverse=True)
+        per_loc.append((sigs, [c for c in sigs if is_candidate(c[1])]))
+
+    # Each account may belong to ONE location. If several locations claim it
+    # (e.g. two wings listed separately at one address), it goes to the location
+    # it matches best; the others lose it and say so in their evidence.
+    owner = {}
+    for i, (_, cands) in enumerate(per_loc):
+        for a, s in cands:
+            score = claim_score(s)
+            if a["account_id"] not in owner or score > owner[a["account_id"]][0]:
+                owner[a["account_id"]] = (score, i)
+
+    for i, loc in enumerate(locations):
+        sigs, all_cands = per_loc[i]
+        cands = sorted([c for c in all_cands if owner[c[0]["account_id"]][1] == i],
+                       key=survivor_rank(bh_id, loc), reverse=True)
+        shared = [{"account": acc_view(a, parents), "signals": s,
+                   "assigned_to": locations[owner[a["account_id"]][1]]["slug"]}
+                  for a, s in all_cands if owner[a["account_id"]][1] != i]
         lookalikes = [
             {"account": acc_view(a, parents), "signals": s,
              "why_not": "different city/state" if not s["same_city"] else "different street address"}
@@ -164,6 +189,8 @@ def build(locations, accounts):
         ]
         evidence_base = {"website": loc, "rejected_lookalikes": lookalikes,
                          "candidates": [{"account": acc_view(a, parents), "signals": s} for a, s in cands]}
+        if shared:
+            evidence_base["shared_with_other_location"] = shared
 
         if not cands:
             cts = care_types(loc["care_offerings"])
@@ -171,8 +198,12 @@ def build(locations, accounts):
                     "billing_city": loc["city"], "billing_state": loc["state"], "billing_zip": loc["zip"],
                     "care_type": cts[0] if cts else "", "phone": loc["phone"], "status": "Active",
                     "note": f"{TAG} Created from Bellhaven website listing {loc['url']}"}
-            add("new_account", loc, None, f"Create account: {loc['name']}",
-                f"No CRM account at {loc['street']}, {loc['city']} {loc['state']}. Create it under Bellhaven.",
+            summary = f"No CRM account at {loc['street']}, {loc['city']} {loc['state']}. Create it under Bellhaven."
+            if shared:
+                summary = (f"WARNING: the CRM account(s) at this address match another website location better "
+                           f"({', '.join(sorted({x['assigned_to'] for x in shared}))}). Approve only if these really are "
+                           f"separate facilities; otherwise reject. ") + summary
+            add("new_account", loc, None, f"Create account: {loc['name']}", summary,
                 [{"op": "POST", "ref": "new", "body": body}], evidence_base)
             report["new"].append(loc["slug"])
             continue

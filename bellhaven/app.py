@@ -10,7 +10,7 @@ from flask import Flask, abort, redirect, render_template, request, url_for
 from .apply import apply_proposal
 from .crm import CRM, crm_browser_url
 from .normalize import care_types, norm_phone, norm_street, norm_zip
-from .store import connect, load, now
+from .store import connect, load, log_decision, now
 
 app = Flask(__name__)
 STATUSES = ["pending", "applied", "rejected", "failed", "stale", "approved"]
@@ -70,11 +70,12 @@ def index():
 def approve(pid):
     con = connect()
     row = con.execute("SELECT status FROM proposals WHERE id=?", (pid,)).fetchone() or abort(404)
-    if row["status"] not in ("pending", "failed"):
+    if row["status"] not in ("pending", "failed", "approved"):  # approved = crashed before applying
         abort(409)
     con.execute("UPDATE proposals SET status='approved', decided_at=?, reviewer_comment=? WHERE id=?",
                 (now(), request.form.get("comment", ""), pid))
     con.commit()
+    log_decision(con, pid)  # durable record of the approval before any CRM write
     apply_proposal(con, CRM(), pid)
     return redirect(request.referrer or url_for("index"))
 
@@ -88,6 +89,7 @@ def reject(pid):
     con.execute("UPDATE proposals SET status='rejected', decided_at=?, reviewer_comment=? WHERE id=?",
                 (now(), request.form.get("comment", ""), pid))
     con.commit()
+    log_decision(con, pid)
     return redirect(request.referrer or url_for("index"))
 
 

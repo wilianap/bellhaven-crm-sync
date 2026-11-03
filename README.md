@@ -8,7 +8,9 @@ proposed fixes. A human then approves or rejects each one in a local review app.
 ```
 website ──scraper──┐
                    ├─ matcher (pure function) ─▶ proposals ─▶ SQLite queue ─▶ review app ─▶ CRM API
-CRM API ──list─────┘                                          (state/sync.db)   approve = write
+CRM API ──list─────┘                                          (local cache)     approve = write
+                                                                    ▲                │
+                                                                    └── state/decisions.jsonl (git)
 ```
 
 ## Quick start
@@ -26,7 +28,7 @@ export CRM_TOKEN=<your token>
 | `bellhaven/scraper.py` | Crawls `/`, `/about` and every `/communities?page=N`, then each community page. Collects name, street, city, state, zip, care offerings, administrator, phone. |
 | `bellhaven/normalize.py` | Street, zip, phone and name normalisation, plus mapping website care offerings to CRM `care_type`. |
 | `bellhaven/matcher.py` | `build(locations, accounts) -> proposals, report`. A pure function with no I/O. |
-| `bellhaven/store.py` | SQLite queue with fingerprinted proposals, decisions and run log. |
+| `bellhaven/store.py` | `state/decisions.jsonl` is the durable, git-tracked decision log. `state/sync.db` is a disposable local SQLite queue holding proposals, evidence and the run log. |
 | `bellhaven/apply.py` | Runs an approved proposal: a stale-data check before each PATCH, and an idempotent POST. |
 | `bellhaven/app.py` | Flask review app: evidence, the exact API calls, Approve/Reject, "Run pipeline now". |
 | `.github/workflows/daily-sync.yml`, `crontab.example` | Daily schedule. |
@@ -42,12 +44,16 @@ Creek"). The address stays the same.
    - the normalised street matches. Zip is *not* required, which is how the wrong zip on Portsmouth gets caught and fixed.
    - the CRM street can't be used (a PO Box or blank). Then a phone match or a name similarity ≥ 0.85 is accepted, with "medium" confidence. This applies to Ashtabula.
 3. A same-city account with a similar name but a **different street** is *not* a match. It is listed in the evidence as a "rejected lookalike" so the reviewer can see it was considered. Examples: "Amberly Manor" in Colorado Springs, and "Union Square Senior Living" at a different New Albany address.
-4. When several accounts share the address, one survivor is chosen in this order: already under Bellhaven > Active > has revenue > phone matches the website > name similarity > account id. The others become duplicates.
-5. The survivor is classified:
+4. **One account belongs to one location.** If two website locations match the same account (for example two wings
+   listed separately at one address), the account goes to the location it matches best: street, then zip, then phone,
+   then name. The other location loses it, and its proposal carries a warning plus a `shared_with_other_location`
+   block in the evidence. No account ever gets conflicting renames or duplicate flags.
+5. When several accounts share the address, one survivor is chosen in this order: already under Bellhaven > Active > has revenue > phone matches the website > name similarity > account id. The others become duplicates.
+6. The survivor is classified:
    - already under Bellhaven with matching fields → **confident match** (no proposal)
    - under Bellhaven with stale fields → **field fix**
    - under another parent or none → **CHOW** if `lifetime_revenue > 0 AND outstanding_ar > 0`, otherwise a **direct re-parent**
-6. A Bellhaven-parented account that matches no website location:
+7. A Bellhaven-parented account that matches no website location:
    - if another operator's account exists at the same address, the facility was **sold**. With billing history: set `chow_current_account` on the old account to the new owner's *existing* account; nothing else changes. Without billing history: mark it a duplicate.
    - otherwise set `status = Needs Review` with a note. I don't change the parent, because the new owner can't be inferred from the data, and that call belongs to a person.
 
@@ -69,10 +75,15 @@ Every note the tool writes starts with `[bellhaven-sync]`, so automated edits ar
 
 ## Safety and re-runs
 
+- **Decisions are text in git, not a binary database.** Every approve, reject, apply or fail appends one JSON line
+  to `state/decisions.jsonl` (last line per proposal id wins). `.gitattributes` marks it `merge=union`, so two
+  reviewers, or a reviewer and CI, never get a merge conflict. The SQLite file is a cache: delete it and the next
+  run rebuilds it, with decided items restored as history rather than re-proposed. Commit `decisions.jsonl` after a
+  review session.
 - **Read-only pipeline.** `bellhaven.run` never writes to the CRM. Only the Approve button does.
 - **Fingerprinted proposals.** Each proposal's id is a hash of (kind, location, account, the exact changes).
-  If a later run produces the same fingerprint, the existing row is left alone, so approved or rejected
-  items never come back. If the underlying data changes, the fingerprint changes and a new proposal appears.
+  If a later run produces a fingerprint that is already queued or in `decisions.jsonl`, it is not proposed again,
+  so approved or rejected items never come back, even on a fresh machine. If the underlying data changes, the fingerprint changes and a new proposal appears.
 - **Stale proposals.** A pending proposal that the next run no longer generates is marked `stale`,
   so nobody approves it against outdated data.
 - **Fixes take accounts out of play.** Accounts with `duplicate_of_account` or `chow_current_account` set
@@ -82,9 +93,10 @@ Every note the tool writes starts with `[bellhaven-sync]`, so automated edits ar
 - **Idempotent CHOW.** The id of the newly created account is saved straight after the POST, so retrying a
   half-applied CHOW never creates a second account.
 
-The daily GitHub Action runs the tests and the pipeline, then commits `state/sync.db` back to the repo,
-so the next run knows what has already been decided. In production this state would live in a shared
-database rather than a file in git.
+The daily GitHub Action runs the tests and the read-only pipeline, reading `decisions.jsonl` so decided items stay
+decided, and writes the pending queue to the job summary. It has `contents: read` permission and commits nothing,
+so the reviewer is the only one who writes state. In production the decision log would live in a shared database,
+but an append-only log is still the right shape for it.
 
 ## Writeup
 

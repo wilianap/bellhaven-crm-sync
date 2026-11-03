@@ -1,14 +1,18 @@
-# Daily: scrape website -> match against CRM -> queue proposals for review.
-# This job NEVER writes to the CRM; writes only happen from the review app on approval.
-# State (proposals + decisions) lives in state/sync.db, committed back so the next
-# run knows what was already decided and doesn't re-propose it.
+# Daily: scrape website -> match against CRM -> report the proposal queue.
+# This job NEVER writes to the CRM and never commits. Writes only happen from the
+# review app on approval.
+#
+# State: decisions (approved/rejected/applied) live in state/decisions.jsonl,
+# committed by reviewers. It is append-only text with `merge=union`, so it never
+# conflicts. This job only READS it, so a re-run never re-proposes a decided item.
+# The SQLite queue (state/sync.db) is a disposable local cache, rebuilt each run.
 name: daily-sync
 on:
   schedule:
     - cron: "17 9 * * *"   # 09:17 UTC daily
   workflow_dispatch: {}
 permissions:
-  contents: write
+  contents: read
 concurrency: daily-sync
 jobs:
   sync:
@@ -19,13 +23,15 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
       - run: python -m pytest -q tests
-      - run: python -m bellhaven.run
+      - name: Run pipeline (read-only)
+        run: python -m bellhaven.run | tee run.json
         env:
           CRM_TOKEN: ${{ secrets.CRM_TOKEN }}
-      - name: Commit updated state
+      - name: Summarise queue
         run: |
-          git config user.name "bellhaven-sync-bot"
-          git config user.email "bellhaven-sync-bot@users.noreply.github.com"
-          git add state/sync.db
-          git diff --cached --quiet || git commit -m "daily-sync: update proposal queue"
-          git push
+          {
+            echo "## Bellhaven sync";
+            echo '```json'; cat run.json; echo '```';
+            echo "### Pending proposals";
+            sqlite3 -separator ' | ' state/sync.db "SELECT kind, title FROM proposals WHERE status='pending' ORDER BY kind, title" | sed 's/^/- /';
+          } >> "$GITHUB_STEP_SUMMARY"
