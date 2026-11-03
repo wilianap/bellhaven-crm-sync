@@ -1,0 +1,31 @@
+# Daily: scrape website -> match against CRM -> queue proposals for review.
+# This job NEVER writes to the CRM; writes only happen from the review app on approval.
+# State (proposals + decisions) lives in state/sync.db, committed back so the next
+# run knows what was already decided and doesn't re-propose it.
+name: daily-sync
+on:
+  schedule:
+    - cron: "17 9 * * *"   # 09:17 UTC daily
+  workflow_dispatch: {}
+permissions:
+  contents: write
+concurrency: daily-sync
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q tests
+      - run: python -m bellhaven.run
+        env:
+          CRM_TOKEN: ${{ secrets.CRM_TOKEN }}
+      - name: Commit updated state
+        run: |
+          git config user.name "bellhaven-sync-bot"
+          git config user.email "bellhaven-sync-bot@users.noreply.github.com"
+          git add state/sync.db
+          git diff --cached --quiet || git commit -m "daily-sync: update proposal queue"
+          git push

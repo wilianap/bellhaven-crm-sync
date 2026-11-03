@@ -1,0 +1,3 @@
+# Local alternative to the GitHub Actions workflow (crontab -e). Runs daily at 06:17 local time.
+# Only queues proposals; nothing is written to the CRM until approved in the review app.
+17 6 * * * cd /path/to/bellhaven-crm-sync && CRM_TOKEN=xxxxx .venv/bin/python -m bellhaven.run >> state/cron.log 2>&1

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bellhaven CRM Review</title>
+<style>
+:root{--ink:#1f2328;--mut:#656d76;--line:#d0d7de;--bg:#f6f8fa;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--acc:#0969da}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--ink);background:var(--bg)}
+header{background:#24292f;color:#fff;padding:12px 20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+header h1{font-size:17px;margin:0}header .meta{color:#c9d1d9;font-size:12px}header form{margin-left:auto}
+main{max-width:1150px;margin:0 auto;padding:16px}
+.tabs a{display:inline-block;padding:5px 10px;margin:0 4px 6px 0;border:1px solid var(--line);border-radius:16px;background:#fff;color:var(--ink);text-decoration:none;font-size:13px}
+.tabs a.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.card{background:#fff;border:1px solid var(--line);border-radius:8px;margin:12px 0;padding:14px 16px}
+.card h2{font-size:15px;margin:0 0 4px}.sum{color:var(--ink);margin:4px 0 8px}
+.badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:10px;background:#ddf4ff;color:#0550ae;margin-right:6px;font-weight:600}
+.k-chow,.k-chow_link{background:#fff8c5;color:#7d4e00}.k-duplicate{background:#ffebe9;color:#a40e26}.k-not_on_website{background:#fbefff;color:#8250df}.k-new_account{background:#dafbe1;color:#116329}
+.st{font-size:11px;font-weight:700;text-transform:uppercase;color:var(--mut)}.st-applied{color:var(--ok)}.st-failed{color:var(--bad)}.st-rejected{color:var(--bad)}
+table{border-collapse:collapse;width:100%;margin:6px 0;font-size:13px}th,td{border:1px solid var(--line);padding:4px 7px;text-align:left;vertical-align:top}th{background:var(--bg);font-weight:600}
+td.diff{background:#fff8c5}td.k{color:var(--mut);white-space:nowrap;width:150px}
+details{margin:6px 0}summary{cursor:pointer;color:var(--acc)}pre{background:var(--bg);padding:8px;overflow:auto;font-size:12px;border-radius:6px;margin:4px 0}
+.actions{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}.actions input[type=text]{flex:1;min-width:200px;padding:6px;border:1px solid var(--line);border-radius:6px}
+button{padding:6px 14px;border-radius:6px;border:1px solid var(--line);cursor:pointer;font-weight:600}
+.ap{background:var(--ok);color:#fff;border-color:var(--ok)}.rj{background:#fff;color:var(--bad)}.runb{background:#2da44e;color:#fff;border:0}
+.sig span{display:inline-block;margin-right:10px;font-size:12px}.yes{color:var(--ok)}.no{color:var(--mut)}
+a{color:var(--acc)} .muted{color:var(--mut);font-size:12px}
+@media (max-width:700px){td.k{width:auto}}
+</style></head><body>
+<header><h1>Bellhaven → CRM review queue</h1>
+<span class="meta">{% if run %}Last run #{{run.id}} at {{run.finished_at}} · {{run.n_locations}} website locations · {{run.n_accounts}} CRM accounts · {{run.n_new_proposals}} new proposals{% else %}No runs yet{% endif %}</span>
+<form method="post" action="/run"><button class="runb">Run pipeline now</button></form></header>
+<main>
+<div class="tabs">
+{% for s in statuses %}<a class="{{'on' if s==status}}" href="/?status={{s}}">{{s}} ({{counts.get(s,0)}})</a>{% endfor %}
+<a class="{{'on' if status=='all'}}" href="/?status=all">all</a>
+<a class="{{'on' if status=='matched'}}" href="/?status=matched">confident matches ({{report.matched|length}})</a>
+</div>
+{% if kinds %}<div class="tabs"><a class="{{'on' if not kind}}" href="/?status={{status}}">all kinds</a>{% for k,n in kinds.items() %}<a class="{{'on' if k==kind}}" href="/?status={{status}}&kind={{k}}">{{KIND_LABEL.get(k,k)}} ({{n}})</a>{% endfor %}</div>{% endif %}
+
+{% if status=='matched' %}
+<div class="card"><h2>Confident matches, no change needed</h2><p class="muted">Website location → CRM account already correct (parent, name, address, care type).</p>
+<table><tr><th>Website slug</th><th>CRM account</th><th>Confidence</th></tr>
+{% for m in report.matched %}<tr><td>{{m.slug}}</td><td><a href="{{crm_url(m.account_id)}}" target="_blank">{{m.name}}</a> <span class="muted">{{m.account_id}}</span></td><td>{{m.confidence}}</td></tr>{% endfor %}</table></div>
+{% endif %}
+
+{% for p in rows %}{% set ev = p.evidence %}
+<div class="card" id="{{p.id}}">
+  <div><span class="badge k-{{p.kind}}">{{KIND_LABEL.get(p.kind,p.kind)}}</span><span class="st st-{{p.status}}">{{p.status}}</span>
+  {% if ev.confidence %}<span class="muted"> · match confidence: {{ev.confidence}}</span>{% endif %}</div>
+  <h2>{{p.title}}</h2>
+  <p class="sum">{{p.summary}}</p>
+
+  {% if ev.website %}{% set w = ev.website %}
+  <table><tr><th></th><th>Website (<a href="{{w.url}}" target="_blank">source</a>)</th>
+  {% for c in ev.candidates %}<th>CRM {% if c.account.account_id == ev.survivor %}<b>(survivor)</b>{% elif c.account.account_id == ev.duplicate %}<b>(this duplicate)</b>{% endif %}<br><a href="{{crm_url(c.account.account_id)}}" target="_blank">{{c.account.account_id}}</a></th>{% endfor %}</tr>
+  {% for label, wk, ck in [("Name","name","name"),("Street","street","billing_street"),("City","city","billing_city"),("State","state","billing_state"),("Zip","zip","billing_zip"),("Care","care_offerings","care_type"),("Phone","phone","phone"),("Parent","","parent_name"),("Status","","status"),("Lifetime revenue","","lifetime_revenue"),("Outstanding AR","","outstanding_ar"),("Note","","note")] %}
+  <tr><td class="k">{{label}}</td><td>{% if wk %}{{ w[wk]|join(', ') if wk=='care_offerings' else w[wk] }}{% endif %}</td>
+  {% for c in ev.candidates %}{% set v = c.account[ck] %}<td class="{{'diff' if wk and differs(wk, w[wk], v)}}">{{v}}</td>{% endfor %}</tr>{% endfor %}
+  <tr><td class="k">Match signals</td><td></td>{% for c in ev.candidates %}<td class="sig">{% for k,v in c.signals.items() %}<span class="{{'yes' if v is sameas true else 'no'}}">{{k}}: {{v}}</span>{% endfor %}</td>{% endfor %}</tr>
+  </table>
+  {% if ev.rejected_lookalikes %}<details><summary>{{ev.rejected_lookalikes|length}} similar-name CRM account(s) considered and rejected</summary>
+  <table><tr><th>Account</th><th>Address</th><th>Parent</th><th>Name sim.</th><th>Why not a match</th></tr>
+  {% for l in ev.rejected_lookalikes %}<tr><td><a href="{{crm_url(l.account.account_id)}}" target="_blank">{{l.account.name}}</a></td><td>{{l.account.billing_street}}, {{l.account.billing_city}} {{l.account.billing_state}}</td><td>{{l.account.parent_name}}</td><td>{{l.signals.name_similarity}}</td><td>{{l.why_not}}</td></tr>{% endfor %}</table></details>{% endif %}
+  {% elif ev.crm_account %}{% set a = ev.crm_account %}
+  <table><tr><th></th><th>CRM <a href="{{crm_url(a.account_id)}}" target="_blank">{{a.account_id}}</a></th>{% for o in ev.same_address_other_operator %}<th>Same address, other operator<br><a href="{{crm_url(o.account_id)}}" target="_blank">{{o.account_id}}</a></th>{% endfor %}</tr>
+  {% for label,k in [("Name","name"),("Street","billing_street"),("City","billing_city"),("State","billing_state"),("Zip","billing_zip"),("Parent","parent_name"),("Status","status"),("Lifetime revenue","lifetime_revenue"),("Outstanding AR","outstanding_ar")] %}
+  <tr><td class="k">{{label}}</td><td>{{a[k]}}</td>{% for o in ev.same_address_other_operator %}<td>{{o[k]}}</td>{% endfor %}</tr>{% endfor %}
+  <tr><td class="k">On Bellhaven website?</td><td><b>No</b></td></tr></table>
+  {% endif %}
+
+  <details><summary>API calls that will run on approve</summary><pre>{{p.ops|pretty}}</pre></details>
+  {% if p.result %}<details open><summary>Result ({{p.result.at}})</summary><pre>{{p.result.log|join('\n')}}</pre></details>{% endif %}
+  {% if p.reviewer_comment %}<p class="muted">Reviewer comment: {{p.reviewer_comment}}</p>{% endif %}
+
+  {% if p.status in ('pending','failed') %}
+  <form class="actions" method="post">
+    <input type="text" name="comment" placeholder="Optional comment">
+    <button class="ap" formaction="/proposals/{{p.id}}/approve">{{'Retry' if p.status=='failed' else 'Approve & write to CRM'}}</button>
+    {% if p.status=='pending' %}<button class="rj" formaction="/proposals/{{p.id}}/reject">Reject</button>{% endif %}
+  </form>{% endif %}
+  <div class="muted">id {{p.id}} · first seen run #{{p.first_run}} · last seen run #{{p.last_seen_run}}{% if p.decided_at %} · decided {{p.decided_at}}{% endif %}</div>
+</div>
+{% else %}{% if status!='matched' %}<p class="muted">Nothing here.</p>{% endif %}{% endfor %}
+</main></body></html>
