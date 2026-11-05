@@ -37,6 +37,15 @@ class CRM:
                 return out
             page += 1
 
+    def list_contacts(self):
+        out, page = [], 1
+        while True:
+            d = self._req("GET", "/contacts", params={"page": page, "page_size": 100})
+            out += d["data"]
+            if len(out) >= d["total"] or not d["data"]:
+                return out
+            page += 1
+
     def get_account(self, account_id):
         return self._req("GET", f"/accounts/{account_id}")
 

@@ -73,8 +73,30 @@ def read_decisions(path):
                 line = line.strip()
                 if line:
                     d = json.loads(line)
+                    if d.get("type") == "survivor_override":
+                        continue
                     latest[d["id"]] = d
     return latest
+
+
+def read_survivor_overrides(path):
+    """{website slug: account id} chosen by a reviewer to break a survivor tie (last line wins)."""
+    out = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    d = json.loads(line)
+                    if d.get("type") == "survivor_override":
+                        out[d["slug"]] = d["account_id"]
+    return out
+
+
+def log_survivor_override(con, slug, account_id):
+    with open(con.decisions_path, "a") as f:
+        f.write(json.dumps({"type": "survivor_override", "id": f"survivor:{slug}", "slug": slug,
+                            "account_id": account_id, "logged_at": now()}, sort_keys=True) + "\n")
 
 
 def log_decision(con, proposal_id):
@@ -122,7 +144,9 @@ def record_run(con, locations, accounts, proposals, report, started_at):
                  json.dumps(d["result"]) if d.get("result") else None, json.dumps(d.get("created_ids") or {})))
             continue
         if row:
-            con.execute("UPDATE proposals SET last_seen_run=? WHERE id=?", (run_id, p["id"]))
+            # Same change, fresher evidence (e.g. a new tie flag or contacts) - evidence isn't fingerprinted.
+            con.execute("UPDATE proposals SET last_seen_run=?, evidence=?, summary=? WHERE id=?",
+                        (run_id, json.dumps(p["evidence"]), p["summary"], p["id"]))
             if row["status"] == "stale":  # came back unchanged -> reopen
                 con.execute("UPDATE proposals SET status='pending' WHERE id=?", (p["id"],))
             continue

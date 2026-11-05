@@ -21,7 +21,8 @@ details{margin:6px 0}summary{cursor:pointer;color:var(--acc)}pre{background:var(
 button{padding:6px 14px;border-radius:6px;border:1px solid var(--line);cursor:pointer;font-weight:600}
 .ap{background:var(--ok);color:#fff;border-color:var(--ok)}.rj{background:#fff;color:var(--bad)}.runb{background:#2da44e;color:#fff;border:0}
 .sig span{display:inline-block;margin-right:10px;font-size:12px}.yes{color:var(--ok)}.no{color:var(--mut)}
-a{color:var(--acc)} .muted{color:var(--mut);font-size:12px}
+a{color:var(--acc)} .tie{background:#fff8c5;border:1px solid #d4a72c;border-radius:6px;padding:8px 10px;margin:6px 0}.tiebtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}.tiebtns button[disabled]{opacity:.6;cursor:default}
+.muted{color:var(--mut);font-size:12px}
 @media (max-width:700px){td.k{width:auto}}
 </style></head><body>
 <header><h1>Bellhaven → CRM review queue</h1>
@@ -48,6 +49,14 @@ a{color:var(--acc)} .muted{color:var(--mut);font-size:12px}
   <h2>{{p.title}}</h2>
   <p class="sum">{{p.summary}}</p>
 
+  {% if ev.tie and p.status == 'pending' %}<div class="tie">
+    <b>Tie:</b> these accounts are equally good survivors (same parent status, revenue, phone and contacts), so the
+    survivor was picked by account id. Choose the one to keep. The queue will be rebuilt around it.
+    <div class="tiebtns">{% for c in ev.candidates if c.account.account_id in ev.tie %}
+      <form method="post" action="/locations/{{p.location_slug}}/survivor"><input type="hidden" name="account_id" value="{{c.account.account_id}}">
+      <button {{'disabled' if c.account.account_id == ev.survivor}}>{{'✓ ' if c.account.account_id == ev.survivor}}Keep {{c.account.name}} ({{c.account.parent_name.replace(' (Parent Account)','')}})</button></form>
+    {% endfor %}</div></div>{% endif %}
+  {% if ev.survivor_chosen_by_reviewer %}<p class="muted">Survivor chosen by reviewer.</p>{% endif %}
   {% if ev.website %}{% set w = ev.website %}
   <table><tr><th></th><th>Website (<a href="{{w.url}}" target="_blank">source</a>)</th>
   {% for c in ev.candidates %}<th>CRM {% if c.account.account_id == ev.survivor %}<b>(survivor)</b>{% elif c.account.account_id == ev.duplicate %}<b>(this duplicate)</b>{% endif %}<br><a href="{{crm_url(c.account.account_id)}}" target="_blank">{{c.account.account_id}}</a></th>{% endfor %}</tr>

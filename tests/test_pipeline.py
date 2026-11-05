@@ -229,3 +229,36 @@ def test_decision_log_last_line_wins_after_union_merge(tmp_path):
     p.write_text("\n".join(json.dumps(d) for d in [
         {"id": "x", "status": "approved"}, {"id": "y", "status": "rejected"}, {"id": "x", "status": "applied"}]) + "\n")
     assert {k: v["status"] for k, v in read_decisions(str(p)).items()} == {"x": "applied", "y": "rejected"}
+
+
+def test_admin_contact_breaks_survivor_tie():
+    l = loc("a", "Bellhaven A", "1 Main St")
+    l["administrator"] = "Pat Lee"
+    accs = PARENTS + [acc("1", "Old A", "1 Main St", parent=OLD),
+                      acc("2", "Other A", "1 Main St", parent=OTHER, contact_names=["pat lee"])]
+    props, _ = build([l], accs)
+    surv = {p["kind"]: p for p in props}["reparent"]
+    assert surv["account_id"] == "2" and "tie" not in surv["evidence"]
+
+
+def test_real_tie_is_flagged_and_reviewer_can_override():
+    l = loc("a", "Bellhaven A", "1 Main St")
+    accs = PARENTS + [acc("1", "Old A", "1 Main St", parent=OLD), acc("2", "Other A", "1 Main St", parent=OTHER)]
+    props, _ = build([l], accs)
+    rep = {p["kind"]: p for p in props}["reparent"]
+    assert sorted(rep["evidence"]["tie"]) == ["1", "2"]
+    other = "1" if rep["account_id"] == "2" else "2"
+    props, _ = build([l], accs, survivor_overrides={"a": other})
+    by = {p["kind"]: p for p in props}
+    assert by["reparent"]["account_id"] == other and by["duplicate"]["account_id"] == rep["account_id"]
+    assert by["reparent"]["evidence"]["survivor_chosen_by_reviewer"]
+    assert sorted(by["reparent"]["evidence"]["tie"]) == ["1", "2"]  # choice stays visible
+
+
+def test_override_is_stored_in_decision_log(tmp_path):
+    from bellhaven.store import log_survivor_override, read_decisions, read_survivor_overrides
+    con = connect(str(tmp_path / "s.db"))
+    log_survivor_override(con, "a", "1")
+    log_survivor_override(con, "a", "2")
+    assert read_survivor_overrides(con.decisions_path) == {"a": "2"}
+    assert read_decisions(con.decisions_path) == {}

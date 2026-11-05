@@ -48,7 +48,20 @@ Creek"). The address stays the same.
    listed separately at one address), the account goes to the location it matches best: street, then zip, then phone,
    then name. The other location loses it, and its proposal carries a warning plus a `shared_with_other_location`
    block in the evidence. No account ever gets conflicting renames or duplicate flags.
-5. When several accounts share the address, one survivor is chosen in this order: already under Bellhaven > Active > has revenue > phone matches the website > name similarity > account id. The others become duplicates.
+5. When several accounts share the address, one survivor is chosen in this order:
+   - a reviewer's explicit choice;
+   - already under Bellhaven;
+   - Active;
+   - **the website's administrator is a contact on the account** (this signal identifies 20 of the 35 facilities);
+   - has revenue;
+   - phone matches the website;
+   - name similarity;
+   - account id.
+
+   If the top candidates are equal on every strong signal (name similarity and account id don't count), the
+   proposal is flagged as a **tie**. The review app then shows a "Keep …" button for each tied account. A choice
+   is saved to `decisions.jsonl` and the queue is rebuilt around it: the old proposals go stale and new ones appear.
+   On this data only Kettering ties, because none of its three zero-revenue accounts has a contact.
 6. The survivor is classified:
    - already under Bellhaven with matching fields → **confident match** (no proposal)
    - under Bellhaven with stale fields → **field fix**
@@ -109,6 +122,11 @@ a PO-box address, a wrong zip, a sold facility (Sandusky, now under Millstone), 
 I reviewed each case by hand against the raw data before trusting the matcher. Then I pinned the rules
 down with unit tests (CHOW branches, lookalike rejection, re-run idempotency, conflict abort). No LLM
 calls are made at runtime; the matching is deterministic.
+
+**Known limitations, deliberately left for later:**
+- Approval is per proposal, not per field (e.g. you can't accept Kettering's re-parent but reject the rename).
+- Sale detection needs an exact normalised street match with the buyer's account.
+- Phone numbers are evidence only and are never updated.
 
 **What I'd build next:**
 - Store state in a shared DB and add reviewer identity and authentication to the review app.

@@ -10,7 +10,7 @@ from flask import Flask, abort, redirect, render_template, request, url_for
 from .apply import apply_proposal
 from .crm import CRM, crm_browser_url
 from .normalize import care_types, norm_phone, norm_street, norm_zip
-from .store import connect, load, log_decision, now
+from .store import connect, load, log_decision, log_survivor_override, now
 
 app = Flask(__name__)
 STATUSES = ["pending", "applied", "rejected", "failed", "stale", "approved"]
@@ -91,6 +91,17 @@ def reject(pid):
     con.commit()
     log_decision(con, pid)
     return redirect(request.referrer or url_for("index"))
+
+
+@app.post("/locations/<slug>/survivor")
+def choose_survivor(slug):
+    """Reviewer breaks a survivor tie. Recorded in decisions.jsonl, then the queue is rebuilt:
+    proposals built on the old pick go 'stale', new ones appear for the chosen survivor."""
+    from .run import main
+    account_id = request.form.get("account_id") or abort(400)
+    log_survivor_override(connect(), slug, account_id)
+    main()
+    return redirect(url_for("index", status="pending"))
 
 
 @app.post("/run")

@@ -63,6 +63,10 @@ def signals(loc, acc):
         "crm_address_usable": usable,
         "phone_match": bool(norm_phone(loc["phone"])) and norm_phone(loc["phone"]) == norm_phone(acc["phone"]),
         "name_similarity": name_similarity(loc["name"], acc["name"]),
+        # Website administrator is a contact on this account (accounts carry `contact_names`
+        # when run.py fetched contacts; absent in tests -> False).
+        "admin_is_contact": bool(loc.get("administrator")) and
+            norm_city(loc["administrator"]) in {norm_city(n) for n in acc.get("contact_names", [])},
     }
 
 
@@ -129,18 +133,39 @@ def claim_score(sig):
     return (sig["street_match"], sig["zip_match"], sig["phone_match"], sig["name_similarity"])
 
 
-def survivor_rank(bh_id, loc):
+def survivor_rank(bh_id, override=None):
+    """Sort key for picking the surviving account among same-address candidates.
+
+    A reviewer's explicit choice wins; then evidence of which record is the live one.
+    The account id is only a last resort, and when it decides, the proposal is flagged as a tie.
+    """
     def key(c):
         acc, sig = c
-        return (acc["parent_id"] == bh_id, acc.get("status") == "Active",
+        return (acc["account_id"] == override,
+                acc["parent_id"] == bh_id, acc.get("status") == "Active",
+                sig.get("admin_is_contact", False),
                 (acc.get("lifetime_revenue") or 0), sig["phone_match"],
                 sig["name_similarity"], acc["account_id"])
     return key
 
 
+def tie_info(cands, rank):
+    """Account ids tied with the top candidate on every STRONG signal, or None.
+
+    Ignores the reviewer override (so the choice stays visible after picking) and
+    name similarity (old-owner names say little about which record should survive).
+    """
+    if len(cands) < 2:
+        return None
+    strong = lambda c: rank(c)[1:-2]
+    tied = [a["account_id"] for a, s in cands if strong((a, s)) == strong(cands[0])]
+    return tied if len(tied) > 1 else None
+
+
 # ---------------------------------------------------------------- main
 
-def build(locations, accounts):
+def build(locations, accounts, survivor_overrides=None):
+    survivor_overrides = survivor_overrides or {}
     parents = {a["account_id"]: a for a in accounts if a["name"].endswith("(Parent Account)")}
     bh = next(a for a in accounts if a["name"] == PARENT_NAME)
     bh_id = bh["account_id"]
@@ -177,8 +202,10 @@ def build(locations, accounts):
 
     for i, loc in enumerate(locations):
         sigs, all_cands = per_loc[i]
-        cands = sorted([c for c in all_cands if owner[c[0]["account_id"]][1] == i],
-                       key=survivor_rank(bh_id, loc), reverse=True)
+        override = survivor_overrides.get(loc["slug"])
+        rank = survivor_rank(bh_id, override)
+        cands = sorted([c for c in all_cands if owner[c[0]["account_id"]][1] == i], key=rank, reverse=True)
+        tied = tie_info(cands, rank)
         shared = [{"account": acc_view(a, parents), "signals": s,
                    "assigned_to": locations[owner[a["account_id"]][1]]["slug"]}
                   for a, s in all_cands if owner[a["account_id"]][1] != i]
@@ -210,6 +237,10 @@ def build(locations, accounts):
 
         surv, ssig = cands[0]
         claimed.update(a["account_id"] for a, _ in cands)
+        if tied:
+            evidence_base["tie"] = tied
+        if override and override == surv["account_id"]:
+            evidence_base["survivor_chosen_by_reviewer"] = True
         ev = {**evidence_base, "survivor": surv["account_id"], "confidence": confidence(ssig)}
         diffs = field_diffs(loc, surv)
         old_parent = parents.get(surv["parent_id"], {}).get("name", "(no parent)")
